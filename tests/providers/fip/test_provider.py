@@ -5,20 +5,26 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, EventType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.fip import SUPPORTED_FEATURES
 from music_assistant.providers.fip.constants import (
+    FIP_STATIONS,
     OVERDUE_UPDATE_INTERVAL,
+    STREAM_DELAY,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
+from music_assistant.providers.fip.helpers import LiveDisplay
 from music_assistant.providers.fip.provider import LIVE_DISPLAY_KEY, FipProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import Radio
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -61,7 +67,9 @@ def provider() -> FipProvider:
         return default
 
     config.get_value.side_effect = _get_value
-    return FipProvider(MagicMock(), manifest, config, SUPPORTED_FEATURES)
+    provider = FipProvider(MagicMock(), manifest, config, SUPPORTED_FEATURES)
+    provider._station_displays = {station_id: LiveDisplay() for station_id in FIP_STATIONS}
+    return provider
 
 
 async def test_get_radio_and_unknown_station(provider: FipProvider) -> None:
@@ -82,10 +90,54 @@ async def test_search_matches_station_names(provider: FipProvider) -> None:
 
 
 async def test_browse_lists_all_thirteen_stations(provider: FipProvider) -> None:
-    """Browsing lists FIP and its twelve webradios."""
+    """Browsing lists FIP and its twelve webradios, each with what it plays now."""
+    start = time.time() - 30
+    provider._get_live = AsyncMock(return_value=_song_now(start))  # type: ignore[method-assign]
     items = await provider.browse("fip://")
     assert len(items) == 13
     assert items[0].name == "FIP"
+    radio = cast("Radio", items[0])
+    assert radio.metadata.description == "Song — Artist"
+    assert radio.metadata.images
+    assert radio.metadata.images[0].path.endswith("/cover/400x400")
+
+
+async def test_browse_keeps_each_station_up_to_date(provider: FipProvider) -> None:
+    """Each station is looked at again when its song ends, and a new song is sent out."""
+    start = time.time() - 30
+    provider._get_live = AsyncMock(return_value=_song_now(start))  # type: ignore[method-assign]
+    await provider.browse("fip://")
+    call_later = cast("MagicMock", provider.mass.call_later)
+    assert call_later.call_count == 13
+    delay, target, station_id = call_later.call_args_list[0].args
+    assert target == provider._update_station
+    assert station_id == "fip"
+    assert delay == pytest.approx(start + 200 + STREAM_DELAY - time.time(), abs=2)
+
+    signal_event = cast("MagicMock", provider.mass.signal_event)
+    await provider._update_station("fip")
+    signal_event.assert_not_called()
+    provider._get_live.return_value = _song_now(time.time())
+    await provider._update_station("fip")
+    event, uri, radio = signal_event.call_args.args
+    assert event == EventType.MEDIA_ITEM_UPDATED
+    assert uri == f"{provider.instance_id}://radio/fip"
+    assert radio.uri == uri
+
+
+async def test_the_list_is_left_alone_once_nobody_browses(provider: FipProvider) -> None:
+    """After the watch period a station is no longer looked at again."""
+    provider._get_live = AsyncMock(return_value=_song_now(time.time()))  # type: ignore[method-assign]
+    provider._watch_until = time.time() - 1
+    await provider._update_station("fip_jazz")
+    cast("MagicMock", provider.mass.call_later).assert_not_called()
+
+
+async def test_unload_stops_the_station_timers(provider: FipProvider) -> None:
+    """Unloading the provider cancels every station's timer."""
+    with patch("music_assistant.models.provider.Provider.unload", AsyncMock()):
+        await provider.unload()
+    assert cast("MagicMock", provider.mass.cancel_timer).call_count == 13
 
 
 async def test_stream_details_wire_the_live_metadata(provider: FipProvider) -> None:

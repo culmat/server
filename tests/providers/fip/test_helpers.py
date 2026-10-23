@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from music_assistant.providers.fip.constants import FIP_STATIONS, STREAM_DELAY
+from music_assistant.providers.fip.constants import (
+    FIP_STATIONS,
+    OVERDUE_UPDATE_INTERVAL,
+    PLACEHOLDER_RETRY_INTERVAL,
+    STREAM_DELAY,
+)
 from music_assistant.providers.fip.helpers import (
     LiveDisplay,
     LiveItem,
@@ -49,7 +54,7 @@ def test_a_song_has_title_artist_cover_and_times() -> None:
         end=1792779226,
         song_id="06bf6232-8fb4-4ad2-b15a-a2599e8a6d57",
     )
-    assert current.is_song
+    assert current.song_id is not None
     assert upcoming is not None
     assert upcoming.title == "Lawns"
     assert upcoming.start == current.end
@@ -61,7 +66,7 @@ def test_a_programme_is_timed_but_not_a_song() -> None:
     assert current is not None
     assert current.title == "Club Jazzafip"
     assert current.is_timed
-    assert not current.is_song
+    assert current.song_id is None
 
 
 def test_a_placeholder_has_no_times() -> None:
@@ -96,20 +101,21 @@ def test_song_metadata_with_cover_and_progress() -> None:
     assert metadata is not None
     assert metadata.title == "Song"
     assert metadata.artist == "Artist"
-    assert metadata.description is None
+    assert metadata.album is None
     assert metadata.image_url == "https://www.radiofrance.fr/pikapi/images/cover-Song/400x400"
     assert metadata.duration == 200
     assert metadata.elapsed_time == 30
 
 
-def test_programme_metadata_puts_the_tagline_in_the_description() -> None:
-    """A programme shows its name, with the station's tagline as description."""
+def test_programme_metadata_puts_the_tagline_in_place_of_an_artist() -> None:
+    """A programme shows its name with the station's tagline, and leaves the album free."""
     current, _ = parse_live(_fixture("fip_programme"))
     metadata = build_stream_metadata(current, at=1792775000)
     assert metadata is not None
     assert metadata.title == "Club Jazzafip"
-    assert metadata.artist is None
-    assert metadata.description == "La radio la plus éclectique du monde"
+    assert metadata.artist == "La radio la plus éclectique du monde"
+    assert metadata.album is None
+    assert metadata.description is None
     assert metadata.duration == 3600
 
 
@@ -209,6 +215,26 @@ def test_a_programme_hands_over_to_its_first_song() -> None:
     display.update(current, song, at=1792778000)
     assert display.update(current, None, at=1792778400 + STREAM_DELAY)
     assert display.shown == song
+
+
+def test_the_next_look_is_when_the_song_ends() -> None:
+    """The service is asked again when the song ends, often while overdue, rarely otherwise."""
+    display = LiveDisplay()
+    assert display.next_look(0) == PLACEHOLDER_RETRY_INTERVAL
+    display.update(_song("A", 1000, 1200), None, at=1010)
+    assert display.next_look(1100) == 1200 + STREAM_DELAY - 1100
+    assert display.next_look(1200 + STREAM_DELAY) == OVERDUE_UPDATE_INTERVAL
+
+
+def test_a_station_entry_shows_what_plays() -> None:
+    """A station with a song on air shows its cover, title and artist."""
+    radio = parse_radio("fip_jazz", "fip_test", "fip", _song("Lush Life", 1000, 1200))
+    assert radio.name == "FIP Jazz"
+    assert radio.metadata.description == "Lush Life — Artist"
+    assert radio.metadata.images
+    assert "cover-Lush Life" in radio.metadata.images[0].path
+    idle = parse_radio("fip_jazz", "fip_test", "fip", PLACEHOLDER)
+    assert idle.metadata.description == FIP_STATIONS["fip_jazz"]["description"]
 
 
 def test_overdue_once_the_song_should_be_over() -> None:

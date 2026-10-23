@@ -28,6 +28,13 @@ OVERDUE_UPDATE_INTERVAL = 3
 # then neither the service's placeholder nor an entry that started earlier replaces it.
 ON_AIR_GRACE = 60
 
+# How long (seconds) after the station list was last browsed its entries are kept up to
+# date: an open browse view replaces an entry when its song changes.
+STATION_LIST_WATCH = 1800
+
+# How often (seconds) a station on its placeholder is asked again while the list is watched.
+PLACEHOLDER_RETRY_INTERVAL = 30
+
 # How long (seconds) one answer from the service is shared by the queues playing a station.
 LIVE_CACHE_EXPIRATION = 5
 

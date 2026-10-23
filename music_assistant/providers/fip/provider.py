@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Sequence
 from typing import Any
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, EventType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -29,6 +30,7 @@ from .constants import (
     LIVE_CACHE_EXPIRATION,
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
+    STATION_LIST_WATCH,
     STREAM_METADATA_UPDATE_INTERVAL,
     STREAM_URL,
 )
@@ -42,6 +44,10 @@ class FipProvider(MusicProvider):
     """FIP Music Provider for Music Assistant."""
 
     _throttler: Throttler
+    # what each station shows in the station list
+    _station_displays: dict[str, LiveDisplay]
+    # until when the station list is kept up to date (see STATION_LIST_WATCH)
+    _watch_until: float = 0.0
 
     @property
     def max_concurrent_streams(self) -> None:
@@ -51,6 +57,14 @@ class FipProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=5, period=1.0)
+        self._station_displays = {station_id: LiveDisplay() for station_id in FIP_STATIONS}
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        for station_id in FIP_STATIONS:
+            self.mass.cancel_timer(self._station_task_id(station_id))
+            self.mass.cancel_task(self._station_task_id(station_id))
+        await super().unload(is_removed)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
@@ -110,10 +124,47 @@ class FipProvider(MusicProvider):
         return stream_details
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items."""
-        return [
-            parse_radio(station_id, self.instance_id, self.domain) for station_id in FIP_STATIONS
-        ]
+        """
+        Browse this provider's items: the stations, each showing what it plays now.
+
+        From then on, for a while (see STATION_LIST_WATCH), each station is asked again when
+        its song ends, and an open browse view is sent the station's new entry.
+        """
+        self._watch_until = time.time() + STATION_LIST_WATCH
+        await asyncio.gather(
+            *(self._update_station(station_id, notify=False) for station_id in FIP_STATIONS)
+        )
+        return [self._station_radio(station_id) for station_id in FIP_STATIONS]
+
+    def _station_radio(self, station_id: str) -> Radio:
+        """Return a station's entry in the station list, with what it plays now."""
+        live = self._station_displays[station_id].shown
+        return parse_radio(station_id, self.instance_id, self.domain, live)
+
+    def _station_task_id(self, station_id: str) -> str:
+        """Return the id of the timer that keeps a station's list entry up to date."""
+        return f"fip_station_{self.instance_id}_{station_id}"
+
+    async def _update_station(self, station_id: str, notify: bool = True) -> None:
+        """
+        Bring a station's list entry up to date, and look again when it is due.
+
+        :param station_id: A known FIP station id.
+        :param notify: Whether to send the new entry to open browse views when it changed.
+        """
+        display = self._station_displays[station_id]
+        data = await self._get_live(FIP_STATIONS[station_id]["api_id"])
+        now = time.time()
+        if data is not None and display.update(*parse_live(data), now) and notify:
+            radio = self._station_radio(station_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, radio.uri, radio)
+        if now < self._watch_until:
+            self.mass.call_later(
+                display.next_look(now),
+                self._update_station,
+                station_id,
+                task_id=self._station_task_id(station_id),
+            )
 
     @use_cache(LIVE_CACHE_EXPIRATION, cache_none=False)
     async def _get_live(self, api_id: int) -> dict[str, Any] | None:

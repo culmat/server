@@ -9,7 +9,14 @@ from music_assistant_models.enums import ImageType
 from music_assistant_models.media_items import MediaItemImage, ProviderMapping, Radio
 from music_assistant_models.streamdetails import StreamMetadata
 
-from .constants import FIP_STATIONS, IMAGE_URL, ON_AIR_GRACE, STREAM_DELAY
+from .constants import (
+    FIP_STATIONS,
+    IMAGE_URL,
+    ON_AIR_GRACE,
+    OVERDUE_UPDATE_INTERVAL,
+    PLACEHOLDER_RETRY_INTERVAL,
+    STREAM_DELAY,
+)
 
 
 @dataclass(frozen=True)
@@ -32,11 +39,6 @@ class LiveItem:
     def is_timed(self) -> bool:
         """Return whether this is a song or a programme rather than a placeholder."""
         return self.start is not None
-
-    @property
-    def is_song(self) -> bool:
-        """Return whether this is a song (a programme has no song id)."""
-        return self.is_timed and self.song_id is not None
 
 
 @dataclass
@@ -82,6 +84,19 @@ class LiveDisplay:
         shown = self.shown
         return bool(shown and shown.end and at >= shown.end + STREAM_DELAY)
 
+    def next_look(self, at: float) -> float:
+        """
+        Return how long (seconds) to wait before asking the service again.
+
+        :param at: The current time (epoch seconds).
+        """
+        shown = self.shown
+        if shown is None or not shown.end:
+            return PLACEHOLDER_RETRY_INTERVAL
+        if self.overdue(at):
+            return OVERDUE_UPDATE_INTERVAL
+        return shown.end + STREAM_DELAY - at
+
     def _no_news(self, item: LiveItem, at: float) -> bool:
         """Return whether an entry from the service should leave the display as it is."""
         shown = self.shown
@@ -116,13 +131,19 @@ class LiveDisplay:
         self.shown = upcoming
 
 
-def parse_radio(station_id: str, instance_id: str, provider_domain: str) -> Radio:
+def parse_radio(
+    station_id: str, instance_id: str, provider_domain: str, live: LiveItem | None = None
+) -> Radio:
     """
-    Create a Radio object from static station information.
+    Create a Radio object for a station, showing what it plays when that is known.
+
+    With a song or programme on air the radio carries its cover, and its title and artist
+    as description; otherwise the station's own picture and description.
 
     :param station_id: A known FIP station id; callers must validate.
     :param instance_id: The provider instance id.
     :param provider_domain: The provider domain string.
+    :param live: What the station plays now, if known.
     """
     station = FIP_STATIONS[station_id]
     radio = Radio(
@@ -138,12 +159,17 @@ def parse_radio(station_id: str, instance_id: str, provider_domain: str) -> Radi
             )
         },
     )
-    radio.metadata.description = station["description"]
+    on_air = live is not None and live.is_timed
+    if live is not None and on_air:
+        radio.metadata.description = " — ".join(filter(None, (live.title, live.subtitle)))
+    else:
+        radio.metadata.description = station["description"]
+    image_id = live.image_id if live is not None and on_air and live.image_id else None
     radio.metadata.add_image(
         MediaItemImage(
             provider=instance_id,
             type=ImageType.THUMB,
-            path=IMAGE_URL.format(image_id=station["image_id"]),
+            path=IMAGE_URL.format(image_id=image_id or station["image_id"]),
             remotely_accessible=True,
         )
     )
@@ -183,8 +209,9 @@ def build_stream_metadata(item: LiveItem | None, at: float) -> StreamMetadata | 
     """
     Build the stream metadata for the entry on display, or None to show the station.
 
-    A song shows its title, artist and cover; a programme shows its name and picture
-    with the station's tagline as description. A placeholder shows the station itself.
+    A song shows its title, artist and cover; a programme shows its name and picture with
+    the station's tagline in place of an artist. Neither sets an album, so players show the
+    station there. A placeholder shows the station itself.
 
     :param item: The entry on display.
     :param at: The current time (epoch seconds), for the elapsed time.
@@ -193,8 +220,7 @@ def build_stream_metadata(item: LiveItem | None, at: float) -> StreamMetadata | 
         return None
     return StreamMetadata(
         title=item.title,
-        artist=item.subtitle if item.is_song else None,
-        description=None if item.is_song else item.subtitle,
+        artist=item.subtitle,
         image_url=IMAGE_URL.format(image_id=item.image_id) if item.image_id else None,
         duration=item.end - item.start if item.end else None,
         elapsed_time=max(0, int(at - item.start - STREAM_DELAY)),
