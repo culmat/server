@@ -10,8 +10,10 @@ LIVE_URL = "https://api.radiofrance.fr/livemeta/live/{api_id}/webrf_webradio_pla
 # Radio France's Icecast streams, AAC at 192 kbit/s.
 STREAM_URL = "https://icecast.radiofrance.fr/{slug}-hifi.aac"
 
-# Radio France's image service. An image is only served in one of its fixed sizes.
+# Radio France's image service. An image is only served in one of its fixed sizes: a list
+# entry takes a small one, a player showing what plays now a large one.
 IMAGE_URL = "https://www.radiofrance.fr/pikapi/images/{image_id}/400x400"
+NOW_PLAYING_IMAGE_URL = "https://www.radiofrance.fr/pikapi/images/{image_id}/1000x1000"
 
 # Seconds the audio trails the service's clock: the service times a song by the studio,
 # while listeners hear it after the stream's own delay plus the player's buffer.

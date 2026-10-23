@@ -102,7 +102,7 @@ def test_song_metadata_with_cover_and_progress() -> None:
     assert metadata.title == "Song"
     assert metadata.artist == "Artist"
     assert metadata.album is None
-    assert metadata.image_url == "https://www.radiofrance.fr/pikapi/images/cover-Song/400x400"
+    assert metadata.image_url == "https://www.radiofrance.fr/pikapi/images/cover-Song/1000x1000"
     assert metadata.duration == 200
     assert metadata.elapsed_time == 30
 

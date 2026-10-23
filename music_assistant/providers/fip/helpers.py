@@ -12,6 +12,7 @@ from music_assistant_models.streamdetails import StreamMetadata
 from .constants import (
     FIP_STATIONS,
     IMAGE_URL,
+    NOW_PLAYING_IMAGE_URL,
     ON_AIR_GRACE,
     OVERDUE_UPDATE_INTERVAL,
     PLACEHOLDER_RETRY_INTERVAL,
@@ -221,7 +222,7 @@ def build_stream_metadata(item: LiveItem | None, at: float) -> StreamMetadata | 
     return StreamMetadata(
         title=item.title,
         artist=item.subtitle,
-        image_url=IMAGE_URL.format(image_id=item.image_id) if item.image_id else None,
+        image_url=NOW_PLAYING_IMAGE_URL.format(image_id=item.image_id) if item.image_id else None,
         duration=item.end - item.start if item.end else None,
         elapsed_time=max(0, int(at - item.start - STREAM_DELAY)),
         elapsed_time_last_updated=at,
