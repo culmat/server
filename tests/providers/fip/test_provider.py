@@ -16,6 +16,7 @@ from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.fip import SUPPORTED_FEATURES
 from music_assistant.providers.fip.constants import (
     FIP_STATIONS,
+    LIVE_UPDATE_DELAY,
     OVERDUE_UPDATE_INTERVAL,
     STREAM_DELAY,
     STREAM_METADATA_UPDATE_INTERVAL,
@@ -82,20 +83,36 @@ async def test_get_radio_and_unknown_station(provider: FipProvider) -> None:
         await provider.get_radio("france_inter")
 
 
-async def test_a_station_asked_for_shows_what_plays_and_follows_the_music(
+async def test_a_station_asked_for_is_itself_and_its_music_follows(
     provider: FipProvider,
 ) -> None:
-    """A station looked up on its own is live, and is looked at again when its song ends."""
+    """A station looked up is the station itself; what it plays follows as an update."""
     start = time.time() - 30
     provider._get_live = AsyncMock(return_value=_song_now(start))  # type: ignore[method-assign]
     radio = await provider.get_radio("fip_jazz")
-    assert radio.metadata.description is not None
-    assert radio.metadata.description.startswith("Song — Artist\n\n")
+    assert radio.metadata.description == FIP_STATIONS["fip_jazz"]["description"]
     assert radio.metadata.images
-    assert radio.metadata.images[0].path.endswith("/cover/400x400")
+    assert radio.metadata.images[0].path.endswith(
+        f"/{FIP_STATIONS['fip_jazz']['image_id']}/400x400"
+    )
     call_later = cast("MagicMock", provider.mass.call_later)
-    _, target, station_id = call_later.call_args.args
-    assert (target, station_id) == (provider._update_station, "fip_jazz")
+    assert call_later.call_args.args == (
+        LIVE_UPDATE_DELAY,
+        provider._update_station,
+        "fip_jazz",
+        True,
+        True,
+    )
+
+    # the update is sent even when the entry did not change, as a view asked for the station
+    signal_event = cast("MagicMock", provider.mass.signal_event)
+    for _ in range(2):
+        await provider._update_station("fip_jazz", True, True)
+        event, uri, live = signal_event.call_args.args
+        assert event == EventType.MEDIA_ITEM_UPDATED
+        assert uri == radio.uri
+        assert live.metadata.description.startswith("Song — Artist\n\n")
+    assert signal_event.call_count == 2
 
 
 async def test_search_matches_station_names(provider: FipProvider) -> None:

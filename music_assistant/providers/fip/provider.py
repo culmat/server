@@ -28,6 +28,7 @@ from .constants import (
     API_TIMEOUT,
     FIP_STATIONS,
     LIVE_CACHE_EXPIRATION,
+    LIVE_UPDATE_DELAY,
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
     STATION_LIST_WATCH,
@@ -68,16 +69,25 @@ class FipProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """
-        Get a station, showing what it plays now.
+        Get a station as itself: its name, picture and description, as a library keeps it.
 
-        Like a browsed station, it is then kept up to date for a while (see STATION_LIST_WATCH),
-        so an open details view follows the music.
+        What it plays now follows as an update of the station (MEDIA_ITEM_UPDATED) right after,
+        and for a while (see STATION_LIST_WATCH) whenever it changes, so an open details view
+        shows the music while a library entry made from the station keeps the station's own.
         """
         if prov_radio_id not in FIP_STATIONS:
             raise MediaNotFoundError(f"Unknown radio station: {prov_radio_id}")
         self._watch_until = max(self._watch_until, time.time() + STATION_LIST_WATCH)
-        await self._update_station(prov_radio_id, notify=False)
-        return self._station_radio(prov_radio_id)
+        # after the answer, so a view that asked has the station before its update
+        self.mass.call_later(
+            LIVE_UPDATE_DELAY,
+            self._update_station,
+            prov_radio_id,
+            True,
+            True,
+            task_id=self._station_task_id(prov_radio_id),
+        )
+        return parse_radio(prov_radio_id, self.instance_id, self.domain)
 
     async def search(
         self,
@@ -152,17 +162,21 @@ class FipProvider(MusicProvider):
         """Return the id of the timer that keeps a station's list entry up to date."""
         return f"fip_station_{self.instance_id}_{station_id}"
 
-    async def _update_station(self, station_id: str, notify: bool = True) -> None:
+    async def _update_station(
+        self, station_id: str, notify: bool = True, always: bool = False
+    ) -> None:
         """
         Bring a station's list entry up to date, and look again when it is due.
 
         :param station_id: A known FIP station id.
-        :param notify: Whether to send the new entry to open browse views when it changed.
+        :param notify: Whether to send the new entry to open views when it changed.
+        :param always: Send the entry even when it did not change.
         """
         display = self._station_displays[station_id]
         data = await self._get_live(FIP_STATIONS[station_id]["api_id"])
         now = time.time()
-        if data is not None and display.update(*parse_live(data), now) and notify:
+        changed = data is not None and display.update(*parse_live(data), now)
+        if notify and (changed or always):
             radio = self._station_radio(station_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, radio.uri, radio)
         if now < self._watch_until:
