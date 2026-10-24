@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.enums import ContentType, EventType, MediaType, StreamType
@@ -28,7 +28,6 @@ from .constants import (
     API_TIMEOUT,
     FIP_STATIONS,
     LIVE_CACHE_EXPIRATION,
-    LIVE_UPDATE_DELAY,
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
     STATION_LIST_WATCH,
@@ -36,6 +35,9 @@ from .constants import (
     STREAM_URL,
 )
 from .helpers import LiveDisplay, build_stream_metadata, parse_live, parse_radio
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 # Key in StreamDetails.data under which a playing stream keeps its LiveDisplay.
 LIVE_DISPLAY_KEY = "fip_live_display"
@@ -59,9 +61,14 @@ class FipProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=5, period=1.0)
         self._station_displays = {station_id: LiveDisplay() for station_id in FIP_STATIONS}
+        self._unsubscribe_library = self.mass.subscribe(
+            self._keep_library_entry_plain,
+            (EventType.MEDIA_ITEM_ADDED, EventType.MEDIA_ITEM_UPDATED),
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        self._unsubscribe_library()
         for station_id in FIP_STATIONS:
             self.mass.cancel_timer(self._station_task_id(station_id))
             self.mass.cancel_task(self._station_task_id(station_id))
@@ -69,25 +76,16 @@ class FipProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """
-        Get a station as itself: its name, picture and description, as a library keeps it.
+        Get a station, showing what it plays now.
 
-        What it plays now follows as an update of the station (MEDIA_ITEM_UPDATED) right after,
-        and for a while (see STATION_LIST_WATCH) whenever it changes, so an open details view
-        shows the music while a library entry made from the station keeps the station's own.
+        Like a browsed station, it is then kept up to date for a while (see STATION_LIST_WATCH),
+        so an open details view follows the music.
         """
         if prov_radio_id not in FIP_STATIONS:
             raise MediaNotFoundError(f"Unknown radio station: {prov_radio_id}")
         self._watch_until = max(self._watch_until, time.time() + STATION_LIST_WATCH)
-        # after the answer, so a view that asked has the station before its update
-        self.mass.call_later(
-            LIVE_UPDATE_DELAY,
-            self._update_station,
-            prov_radio_id,
-            True,
-            True,
-            task_id=self._station_task_id(prov_radio_id),
-        )
-        return parse_radio(prov_radio_id, self.instance_id, self.domain)
+        await self._update_station(prov_radio_id, notify=False)
+        return self._station_radio(prov_radio_id)
 
     async def search(
         self,
@@ -153,6 +151,38 @@ class FipProvider(MusicProvider):
         )
         return [self._station_radio(station_id) for station_id in FIP_STATIONS]
 
+    async def _keep_library_entry_plain(self, event: MassEvent) -> None:
+        """
+        Give a library entry made from a station the station's own picture and description.
+
+        A station shows what it plays now, and a library keeps what it is given, so an entry
+        would otherwise keep a song long over.
+
+        :param event: A library or provider item that was added or updated.
+        """
+        item = event.data
+        if not isinstance(item, Radio) or item.provider != "library":
+            return
+        station_id = next(
+            (
+                mapping.item_id
+                for mapping in item.provider_mappings
+                if mapping.provider_instance == self.instance_id and mapping.item_id in FIP_STATIONS
+            ),
+            None,
+        )
+        if station_id is None:
+            return
+        station = parse_radio(station_id, self.instance_id, self.domain)
+        if (
+            item.metadata.description == station.metadata.description
+            and item.metadata.images == station.metadata.images
+        ):
+            return
+        item.metadata.description = station.metadata.description
+        item.metadata.images = station.metadata.images
+        await self.mass.music.radio.update_item_in_library(item.item_id, item, overwrite=True)
+
     def _station_radio(self, station_id: str) -> Radio:
         """Return a station's entry in the station list, with what it plays now."""
         live = self._station_displays[station_id].shown
@@ -162,21 +192,17 @@ class FipProvider(MusicProvider):
         """Return the id of the timer that keeps a station's list entry up to date."""
         return f"fip_station_{self.instance_id}_{station_id}"
 
-    async def _update_station(
-        self, station_id: str, notify: bool = True, always: bool = False
-    ) -> None:
+    async def _update_station(self, station_id: str, notify: bool = True) -> None:
         """
         Bring a station's list entry up to date, and look again when it is due.
 
         :param station_id: A known FIP station id.
         :param notify: Whether to send the new entry to open views when it changed.
-        :param always: Send the entry even when it did not change.
         """
         display = self._station_displays[station_id]
         data = await self._get_live(FIP_STATIONS[station_id]["api_id"])
         now = time.time()
-        changed = data is not None and display.update(*parse_live(data), now)
-        if notify and (changed or always):
+        if data is not None and display.update(*parse_live(data), now) and notify:
             radio = self._station_radio(station_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, radio.uri, radio)
         if now < self._watch_until:

@@ -11,17 +11,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import ContentType, EventType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.event import MassEvent
 
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.providers.fip import SUPPORTED_FEATURES
 from music_assistant.providers.fip.constants import (
     FIP_STATIONS,
-    LIVE_UPDATE_DELAY,
     OVERDUE_UPDATE_INTERVAL,
     STREAM_DELAY,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
-from music_assistant.providers.fip.helpers import LiveDisplay
+from music_assistant.providers.fip.helpers import LiveDisplay, LiveItem, parse_radio
 from music_assistant.providers.fip.provider import LIVE_DISPLAY_KEY, FipProvider
 
 if TYPE_CHECKING:
@@ -70,6 +70,7 @@ def provider() -> FipProvider:
     config.get_value.side_effect = _get_value
     provider = FipProvider(MagicMock(), manifest, config, SUPPORTED_FEATURES)
     provider._station_displays = {station_id: LiveDisplay() for station_id in FIP_STATIONS}
+    provider._unsubscribe_library = MagicMock()
     return provider
 
 
@@ -83,36 +84,64 @@ async def test_get_radio_and_unknown_station(provider: FipProvider) -> None:
         await provider.get_radio("france_inter")
 
 
-async def test_a_station_asked_for_is_itself_and_its_music_follows(
+async def test_a_station_asked_for_shows_what_plays_and_follows_the_music(
     provider: FipProvider,
 ) -> None:
-    """A station looked up is the station itself; what it plays follows as an update."""
+    """A station looked up on its own is live, and is looked at again when its song ends."""
     start = time.time() - 30
     provider._get_live = AsyncMock(return_value=_song_now(start))  # type: ignore[method-assign]
     radio = await provider.get_radio("fip_jazz")
-    assert radio.metadata.description == FIP_STATIONS["fip_jazz"]["description"]
-    assert radio.metadata.images
-    assert radio.metadata.images[0].path.endswith(
-        f"/{FIP_STATIONS['fip_jazz']['image_id']}/400x400"
-    )
+    assert radio.metadata.description is not None
+    assert radio.metadata.description.startswith("Song — Artist\n\n")
     call_later = cast("MagicMock", provider.mass.call_later)
-    assert call_later.call_args.args == (
-        LIVE_UPDATE_DELAY,
-        provider._update_station,
+    _, target, station_id = call_later.call_args.args
+    assert (target, station_id) == (provider._update_station, "fip_jazz")
+
+
+def _library_entry(provider: FipProvider, live: bool, instance_id: str | None = None) -> Radio:
+    """Return a library entry made from FIP Jazz, as it was when it was on air or not."""
+    station = parse_radio(
         "fip_jazz",
-        True,
-        True,
+        instance_id or provider.instance_id,
+        "fip",
+        LiveItem("Song", "Artist", "cover", 1000, 1200, "song") if live else None,
+    )
+    station.provider = "library"
+    station.item_id = "3"
+    return station
+
+
+async def test_a_library_entry_keeps_the_station_picture_and_text(provider: FipProvider) -> None:
+    """A library entry made while a song was on air gets the station's own back."""
+    update = AsyncMock()
+    cast("MagicMock", provider.mass.music.radio).update_item_in_library = update
+    entry = _library_entry(provider, live=True)
+
+    await provider._keep_library_entry_plain(
+        MassEvent(EventType.MEDIA_ITEM_ADDED, entry.uri, entry)
     )
 
-    # the update is sent even when the entry did not change, as a view asked for the station
-    signal_event = cast("MagicMock", provider.mass.signal_event)
-    for _ in range(2):
-        await provider._update_station("fip_jazz", True, True)
-        event, uri, live = signal_event.call_args.args
-        assert event == EventType.MEDIA_ITEM_UPDATED
-        assert uri == radio.uri
-        assert live.metadata.description.startswith("Song — Artist\n\n")
-    assert signal_event.call_count == 2
+    item_id, fixed = update.call_args.args
+    assert item_id == "3"
+    assert update.call_args.kwargs == {"overwrite": True}
+    station = parse_radio("fip_jazz", provider.instance_id, "fip")
+    assert fixed.metadata.description == station.metadata.description
+    assert fixed.metadata.images == station.metadata.images
+    assert fixed.provider_mappings == entry.provider_mappings
+
+
+async def test_a_plain_or_foreign_library_entry_is_left_alone(provider: FipProvider) -> None:
+    """Only a library entry of this provider showing a song is changed."""
+    update = AsyncMock()
+    cast("MagicMock", provider.mass.music.radio).update_item_in_library = update
+    for entry in (
+        _library_entry(provider, live=False),
+        _library_entry(provider, live=True, instance_id="another_fip"),
+    ):
+        await provider._keep_library_entry_plain(
+            MassEvent(EventType.MEDIA_ITEM_UPDATED, entry.uri, entry)
+        )
+    update.assert_not_called()
 
 
 async def test_search_matches_station_names(provider: FipProvider) -> None:

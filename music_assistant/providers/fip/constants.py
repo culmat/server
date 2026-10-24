@@ -19,9 +19,6 @@ NOW_PLAYING_IMAGE_URL = "https://www.radiofrance.fr/pikapi/images/{image_id}/100
 # while listeners hear it after the stream's own delay plus the player's buffer.
 STREAM_DELAY = 8
 
-# Seconds after a station was looked up until its entry with what plays now is sent.
-LIVE_UPDATE_DELAY = 1
-
 # How often (seconds) the player queue asks for now-playing data while a station plays.
 STREAM_METADATA_UPDATE_INTERVAL = 10
 
