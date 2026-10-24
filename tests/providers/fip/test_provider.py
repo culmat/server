@@ -71,6 +71,7 @@ def provider() -> FipProvider:
     provider = FipProvider(MagicMock(), manifest, config, SUPPORTED_FEATURES)
     provider._station_displays = {station_id: LiveDisplay() for station_id in FIP_STATIONS}
     provider._unsubscribe_library = MagicMock()
+    provider._get_pull = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return provider
 
 
@@ -165,6 +166,18 @@ async def test_browse_lists_all_thirteen_stations(provider: FipProvider) -> None
     assert radio.metadata.description.startswith("Song — Artist\n\n")
     assert radio.metadata.images
     assert radio.metadata.images[0].path.endswith("/cover/400x400")
+
+
+async def test_a_station_on_the_placeholder_shows_the_older_services_song(
+    provider: FipProvider,
+) -> None:
+    """While the service answers with its placeholder, the older service's song stands in."""
+    provider._get_live = AsyncMock(return_value=_fixture("webradio_placeholder"))  # type: ignore[method-assign]
+    provider._get_pull = AsyncMock(return_value=_fixture("rock_pull"))  # type: ignore[method-assign]
+    with patch("music_assistant.providers.fip.provider.time.time", return_value=1792838425):
+        radio = await provider.get_radio("fip_rock")
+    assert radio.metadata.description is not None
+    assert radio.metadata.description.startswith("Rise — Public Image Limited\n\n")
 
 
 async def test_browse_keeps_each_station_up_to_date(provider: FipProvider) -> None:

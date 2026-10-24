@@ -250,3 +250,43 @@ def _as_int(value: Any) -> int | None:
         return int(value) if value is not None else None
     except TypeError, ValueError:
         return None
+
+
+def parse_pull(data: dict[str, Any], at: float) -> tuple[LiveItem | None, LiveItem | None]:
+    """
+    Parse an answer of the older now-playing service into the song on air and the one after it.
+
+    :param data: JSON answer of the older service.
+    :param at: The current time (epoch seconds).
+    """
+    songs = sorted(
+        (
+            step
+            for step in (data.get("steps") or {}).values()
+            if step.get("embedType") == "song"
+            and _as_int(step.get("start")) is not None
+            and _as_int(step.get("end")) is not None
+        ),
+        key=lambda step: int(step["start"]),
+    )
+    current = next(
+        (step for step in reversed(songs) if int(step["start"]) <= at < int(step["end"])), None
+    )
+    after = int(current["end"]) if current else at
+    upcoming = next((step for step in songs if int(step["start"]) >= after), None)
+    return _parse_pull_song(current), _parse_pull_song(upcoming)
+
+
+def _parse_pull_song(step: dict[str, Any] | None) -> LiveItem | None:
+    """Return a song of the older service's answer as an entry, or None for none."""
+    if not step or not (title := (step.get("title") or "").strip()):
+        return None
+    artists = ", ".join(step.get("highlightedArtists") or []) or (step.get("authors") or "").strip()
+    return LiveItem(
+        title=title,
+        subtitle=artists or None,
+        image_id=step.get("coverUuid") or None,
+        start=_as_int(step.get("start")),
+        end=_as_int(step.get("end")),
+        song_id=step.get("songId") or None,
+    )

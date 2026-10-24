@@ -20,6 +20,7 @@ from music_assistant.providers.fip.helpers import (
     build_stream_metadata,
     parse_live,
     parse_live_item,
+    parse_pull,
     parse_radio,
 )
 
@@ -328,3 +329,19 @@ def test_a_recorded_stretch_shows_each_song_once_in_order() -> None:
     for at, title in shown[1:]:
         if title != "-":
             assert at <= starts[title] + STREAM_DELAY + 10, title
+
+
+def test_the_older_service_names_the_song_on_air_and_the_next() -> None:
+    """The older service's song on air is the one whose time spans the moment."""
+    current, upcoming = parse_pull(_fixture("rock_pull"), at=1792838425)
+    assert current is not None
+    assert (current.title, current.subtitle) == ("Rise", "Public Image Limited")
+    assert current.image_id == "b225d0d5-191a-461a-ae94-3c9ae6ad07c6"
+    assert (current.start, current.end) == (1792838295, 1792838649)
+    assert upcoming is not None
+    assert upcoming.title == "Phantom"
+
+
+def test_the_older_service_knows_no_song_past_its_last() -> None:
+    """After its last song the older service names nothing on air."""
+    assert parse_pull(_fixture("rock_pull"), at=2_000_000_000) == (None, None)

@@ -7,6 +7,10 @@ import aiohttp
 # Radio France's now-playing service, the one behind the players on radiofrance.fr.
 LIVE_URL = "https://api.radiofrance.fr/livemeta/live/{api_id}/webrf_webradio_player"
 
+# Radio France's older now-playing service. It names a song sooner but has skipped one now and
+# then, so it only stands in while the other answers with its placeholder.
+PULL_URL = "https://api.radiofrance.fr/livemeta/pull/{api_id}"
+
 # Radio France's Icecast streams, AAC at 192 kbit/s.
 STREAM_URL = "https://icecast.radiofrance.fr/{slug}-hifi.aac"
 

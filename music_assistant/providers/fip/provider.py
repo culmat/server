@@ -30,11 +30,19 @@ from .constants import (
     LIVE_CACHE_EXPIRATION,
     LIVE_URL,
     OVERDUE_UPDATE_INTERVAL,
+    PULL_URL,
     STATION_LIST_WATCH,
     STREAM_METADATA_UPDATE_INTERVAL,
     STREAM_URL,
 )
-from .helpers import LiveDisplay, build_stream_metadata, parse_live, parse_radio
+from .helpers import (
+    LiveDisplay,
+    LiveItem,
+    build_stream_metadata,
+    parse_live,
+    parse_pull,
+    parse_radio,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -201,9 +209,9 @@ class FipProvider(MusicProvider):
         :param notify: Whether to send the new entry to open views when it changed.
         """
         display = self._station_displays[station_id]
-        data = await self._get_live(FIP_STATIONS[station_id]["api_id"])
+        answer = await self._live_answer(FIP_STATIONS[station_id]["api_id"])
         now = time.time()
-        if data is not None and display.update(*parse_live(data), now) and notify:
+        if answer is not None and display.update(*answer, now) and notify:
             radio = self._station_radio(station_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, radio.uri, radio)
         if now < self._watch_until:
@@ -214,6 +222,25 @@ class FipProvider(MusicProvider):
                 task_id=self._station_task_id(station_id),
             )
 
+    async def _live_answer(self, api_id: int) -> tuple[LiveItem | None, LiveItem | None] | None:
+        """
+        Get what a station plays now and next, or None if the service is unavailable.
+
+        While the service answers with its placeholder, the older service stands in when it
+        knows the song on air.
+
+        :param api_id: The station's id at the now-playing service.
+        """
+        data = await self._get_live(api_id)
+        if data is None:
+            return None
+        current, upcoming = parse_live(data)
+        if current is None or not current.is_timed:
+            pulled = await self._get_pull(api_id)
+            if pulled is not None and (song := parse_pull(pulled, time.time()))[0] is not None:
+                return song
+        return current, upcoming
+
     @use_cache(LIVE_CACHE_EXPIRATION, cache_none=False)
     async def _get_live(self, api_id: int) -> dict[str, Any] | None:
         """
@@ -221,7 +248,24 @@ class FipProvider(MusicProvider):
 
         :param api_id: The station's id at the now-playing service.
         """
-        url = LIVE_URL.format(api_id=api_id)
+        return await self._fetch_json(LIVE_URL.format(api_id=api_id), api_id)
+
+    @use_cache(LIVE_CACHE_EXPIRATION, cache_none=False)
+    async def _get_pull(self, api_id: int) -> dict[str, Any] | None:
+        """
+        Get the older now-playing service's answer for a station, or None if unavailable.
+
+        :param api_id: The station's id at the now-playing service.
+        """
+        return await self._fetch_json(PULL_URL.format(api_id=api_id), api_id)
+
+    async def _fetch_json(self, url: str, api_id: int) -> dict[str, Any] | None:
+        """
+        Get a JSON answer of a now-playing service, or None if unavailable.
+
+        :param url: The address to ask.
+        :param api_id: The station's id, for the log.
+        """
         try:
             async with (
                 self._throttler,
@@ -250,11 +294,10 @@ class FipProvider(MusicProvider):
         :param elapsed_time: Elapsed playback time in seconds (unused for FIP).
         """
         display: LiveDisplay = stream_details.data[LIVE_DISPLAY_KEY]
-        data = await self._get_live(FIP_STATIONS[stream_details.item_id]["api_id"])
+        answer = await self._live_answer(FIP_STATIONS[stream_details.item_id]["api_id"])
         now = time.time()
-        if data is not None:
-            current, upcoming = parse_live(data)
-            if display.update(current, upcoming, now):
+        if answer is not None:
+            if display.update(*answer, now):
                 stream_details.stream_metadata = build_stream_metadata(display.shown, now)
                 self.logger.debug(
                     "Updating stream metadata for %s: %s",
