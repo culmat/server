@@ -10,6 +10,8 @@ from music_assistant_models.media_items import MediaItemImage, ProviderMapping, 
 from music_assistant_models.streamdetails import StreamMetadata
 
 from .constants import (
+    EMPTY_RETRY_INTERVAL,
+    EMPTY_RETRY_PERIOD,
     FIP_STATIONS,
     IMAGE_URL,
     NOW_PLAYING_IMAGE_URL,
@@ -60,6 +62,8 @@ class LiveDisplay:
 
     shown: LiveItem | None = None
     announced: LiveItem | None = None
+    # since when (epoch seconds) there has been no song or programme to show
+    empty_since: float | None = None
 
     def update(self, now: LiveItem | None, upcoming: LiveItem | None, at: float) -> bool:
         """
@@ -74,6 +78,10 @@ class LiveDisplay:
             self.shown = now
         self._remember(upcoming)
         self._promote(at)
+        if self.shown is not None and self.shown.is_timed:
+            self.empty_since = None
+        elif self.empty_since is None:
+            self.empty_since = at
         return self.shown != before
 
     def overdue(self, at: float) -> bool:
@@ -92,7 +100,12 @@ class LiveDisplay:
         :param at: The current time (epoch seconds).
         """
         shown = self.shown
-        if shown is None or not shown.end:
+        if shown is None or not shown.is_timed:
+            empty_for = at - (self.empty_since if self.empty_since is not None else at)
+            if empty_for < EMPTY_RETRY_PERIOD:
+                return EMPTY_RETRY_INTERVAL
+            return PLACEHOLDER_RETRY_INTERVAL
+        if not shown.end:
             return PLACEHOLDER_RETRY_INTERVAL
         if self.overdue(at):
             return OVERDUE_UPDATE_INTERVAL

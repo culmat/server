@@ -84,7 +84,8 @@ class FipProvider(MusicProvider):
         if prov_radio_id not in FIP_STATIONS:
             raise MediaNotFoundError(f"Unknown radio station: {prov_radio_id}")
         self._watch_until = max(self._watch_until, time.time() + STATION_LIST_WATCH)
-        await self._update_station(prov_radio_id, notify=False)
+        # announced as well: a station list shown from cache learns of it only that way
+        await self._update_station(prov_radio_id)
         return self._station_radio(prov_radio_id)
 
     async def search(

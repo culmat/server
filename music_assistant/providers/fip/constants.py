@@ -35,7 +35,11 @@ ON_AIR_GRACE = 60
 STATION_LIST_WATCH = 1800
 
 # How often (seconds) a station on its placeholder is asked again while the list is watched.
+# The placeholder mostly passes within seconds, so a station asked often at first: every
+# EMPTY_RETRY_INTERVAL for the first EMPTY_RETRY_PERIOD it has nothing to show.
 PLACEHOLDER_RETRY_INTERVAL = 30
+EMPTY_RETRY_INTERVAL = 5
+EMPTY_RETRY_PERIOD = 60
 
 # How long (seconds) one answer from the service is shared by the queues playing a station.
 LIVE_CACHE_EXPIRATION = 5

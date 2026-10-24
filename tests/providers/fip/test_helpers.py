@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from music_assistant.providers.fip.constants import (
+    EMPTY_RETRY_INTERVAL,
+    EMPTY_RETRY_PERIOD,
     FIP_STATIONS,
     OVERDUE_UPDATE_INTERVAL,
     PLACEHOLDER_RETRY_INTERVAL,
@@ -220,10 +222,21 @@ def test_a_programme_hands_over_to_its_first_song() -> None:
 def test_the_next_look_is_when_the_song_ends() -> None:
     """The service is asked again when the song ends, often while overdue, rarely otherwise."""
     display = LiveDisplay()
-    assert display.next_look(0) == PLACEHOLDER_RETRY_INTERVAL
     display.update(_song("A", 1000, 1200), None, at=1010)
     assert display.next_look(1100) == 1200 + STREAM_DELAY - 1100
     assert display.next_look(1200 + STREAM_DELAY) == OVERDUE_UPDATE_INTERVAL
+
+
+def test_a_station_with_nothing_to_show_is_asked_again_soon_at_first() -> None:
+    """The placeholder mostly passes within seconds; one that stays is asked about less often."""
+    display = LiveDisplay()
+    assert display.next_look(0) == EMPTY_RETRY_INTERVAL
+    display.update(PLACEHOLDER, None, at=1000)
+    assert display.next_look(1000 + EMPTY_RETRY_PERIOD - 1) == EMPTY_RETRY_INTERVAL
+    display.update(PLACEHOLDER, None, at=1000 + EMPTY_RETRY_PERIOD)
+    assert display.next_look(1000 + EMPTY_RETRY_PERIOD) == PLACEHOLDER_RETRY_INTERVAL
+    display.update(_song("A", 1100, 1300), None, at=1110)
+    assert display.empty_since is None
 
 
 def test_a_station_entry_shows_what_plays() -> None:
