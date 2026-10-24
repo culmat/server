@@ -227,10 +227,12 @@ def test_the_next_look_is_when_the_song_ends() -> None:
 
 
 def test_a_station_entry_shows_what_plays() -> None:
-    """A station with a song on air shows its cover, title and artist."""
+    """A station with a song on air shows its cover, then title and artist before its own text."""
     radio = parse_radio("fip_jazz", "fip_test", "fip", _song("Lush Life", 1000, 1200))
     assert radio.name == "FIP Jazz"
-    assert radio.metadata.description == "Lush Life — Artist"
+    assert radio.metadata.description == (
+        f"Lush Life — Artist\n\n{FIP_STATIONS['fip_jazz']['description']}"
+    )
     assert radio.metadata.images
     assert "cover-Lush Life" in radio.metadata.images[0].path
     idle = parse_radio("fip_jazz", "fip_test", "fip", PLACEHOLDER)

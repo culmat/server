@@ -67,10 +67,17 @@ class FipProvider(MusicProvider):
         await super().unload(is_removed)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id."""
+        """
+        Get a station, showing what it plays now.
+
+        Like a browsed station, it is then kept up to date for a while (see STATION_LIST_WATCH),
+        so an open details view follows the music.
+        """
         if prov_radio_id not in FIP_STATIONS:
             raise MediaNotFoundError(f"Unknown radio station: {prov_radio_id}")
-        return parse_radio(prov_radio_id, self.instance_id, self.domain)
+        self._watch_until = max(self._watch_until, time.time() + STATION_LIST_WATCH)
+        await self._update_station(prov_radio_id, notify=False)
+        return self._station_radio(prov_radio_id)
 
     async def search(
         self,

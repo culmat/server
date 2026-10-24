@@ -138,8 +138,9 @@ def parse_radio(
     """
     Create a Radio object for a station, showing what it plays when that is known.
 
-    With a song or programme on air the radio carries its cover, and its title and artist
-    as description; otherwise the station's own picture and description.
+    With a song or programme on air the radio carries its cover, and a description that
+    names it on the first line, before the station's own description. Otherwise it carries
+    the station's own picture and description.
 
     :param station_id: A known FIP station id; callers must validate.
     :param instance_id: The provider instance id.
@@ -162,7 +163,8 @@ def parse_radio(
     )
     on_air = live is not None and live.is_timed
     if live is not None and on_air:
-        radio.metadata.description = " — ".join(filter(None, (live.title, live.subtitle)))
+        on_air_line = " — ".join(filter(None, (live.title, live.subtitle)))
+        radio.metadata.description = f"{on_air_line}\n\n{station['description']}"
     else:
         radio.metadata.description = station["description"]
     image_id = live.image_id if live is not None and on_air and live.image_id else None

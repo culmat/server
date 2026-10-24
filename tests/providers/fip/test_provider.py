@@ -74,10 +74,28 @@ def provider() -> FipProvider:
 
 async def test_get_radio_and_unknown_station(provider: FipProvider) -> None:
     """A known station resolves, an unknown one raises."""
+    provider._get_live = AsyncMock(return_value=None)  # type: ignore[method-assign]
     radio = await provider.get_radio("fip_jazz")
     assert radio.name == "FIP Jazz"
+    assert radio.metadata.description == FIP_STATIONS["fip_jazz"]["description"]
     with pytest.raises(MediaNotFoundError):
         await provider.get_radio("france_inter")
+
+
+async def test_a_station_asked_for_shows_what_plays_and_follows_the_music(
+    provider: FipProvider,
+) -> None:
+    """A station looked up on its own is live, and is looked at again when its song ends."""
+    start = time.time() - 30
+    provider._get_live = AsyncMock(return_value=_song_now(start))  # type: ignore[method-assign]
+    radio = await provider.get_radio("fip_jazz")
+    assert radio.metadata.description is not None
+    assert radio.metadata.description.startswith("Song — Artist\n\n")
+    assert radio.metadata.images
+    assert radio.metadata.images[0].path.endswith("/cover/400x400")
+    call_later = cast("MagicMock", provider.mass.call_later)
+    _, target, station_id = call_later.call_args.args
+    assert (target, station_id) == (provider._update_station, "fip_jazz")
 
 
 async def test_search_matches_station_names(provider: FipProvider) -> None:
@@ -97,7 +115,8 @@ async def test_browse_lists_all_thirteen_stations(provider: FipProvider) -> None
     assert len(items) == 13
     assert items[0].name == "FIP"
     radio = cast("Radio", items[0])
-    assert radio.metadata.description == "Song — Artist"
+    assert radio.metadata.description is not None
+    assert radio.metadata.description.startswith("Song — Artist\n\n")
     assert radio.metadata.images
     assert radio.metadata.images[0].path.endswith("/cover/400x400")
 
